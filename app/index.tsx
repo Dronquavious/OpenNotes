@@ -19,10 +19,11 @@ import { RenameDialog } from '../src/components/library/RenameDialog';
 import { FolderPickerSheet } from '../src/components/library/FolderPickerSheet';
 import { CreateNoteBackgroundSheet } from '../src/components/library/CreateNoteBackgroundSheet';
 import { OnboardingExperience } from '../src/components/onboarding/OnboardingExperience';
-import { AboutSheet } from '../src/components/library/AboutSheet';
+import { CommunityInviteSheet } from '../src/components/library/CommunityInviteSheet';
+import { OpenNotesSheet } from '../src/components/library/OpenNotesSheet';
 import { LibrarySection } from '../src/components/library/LibrarySection';
 import { useOnboarding } from '../src/hooks/useOnboarding';
-import { OPEN_NOTES_LINKS, openExternalLink } from '../src/services/externalLinks';
+import { useLibrarySupport } from '../src/hooks/useLibrarySupport';
 import { useTheme } from '../src/hooks/useTheme';
 import { spacing } from '../src/theme/spacing';
 import {
@@ -39,15 +40,12 @@ import {
   listFolders,
   renameFolder,
 } from '../src/services/foldersRepo';
-import {
-  recordReviewSignal,
-  requestReviewAfterPositiveMoment,
-} from '../src/services/reviewPromptService';
 import type { BackgroundType, FolderMetadata, NoteMetadata } from '../src/types/note';
 
 type Action =
   | { kind: 'newItem' }
-  | { kind: 'about' }
+  | { kind: 'openNotes' }
+  | { kind: 'community' }
   | { kind: 'createNoteBackground' }
   | { kind: 'noteMenu'; note: NoteMetadata }
   | { kind: 'folderMenu'; folder: FolderMetadata }
@@ -83,9 +81,20 @@ export default function LibraryScreen() {
   useFocusEffect(
     useCallback(() => {
       void refresh();
-      void requestReviewAfterPositiveMoment();
     }, [refresh]),
   );
+
+  const closeSupport = useCallback(() => setAction(null), []);
+  const showCommunity = useCallback(
+    () => setAction({ kind: 'community' }),
+    [],
+  );
+  const { dismissCommunity, joinCommunity, rateOpenNotes } = useLibrarySupport({
+    canShowAutomaticPrompt:
+      onboarding.ready && !onboarding.visible && action === null,
+    onClose: closeSupport,
+    onShowCommunity: showCommunity,
+  });
 
   const rootNotes = useMemo(
     () =>
@@ -109,7 +118,6 @@ export default function LibraryScreen() {
   const openNote = useCallback(
     (id: string) => {
       void Haptics.selectionAsync();
-      void recordReviewSignal('note_opened');
       router.push(`/note/${id}`);
     },
     [router],
@@ -134,14 +142,12 @@ export default function LibraryScreen() {
           backgroundType,
           title: title.trim() || undefined,
         });
-        void recordReviewSignal('note_created');
         openNote(meta.id);
         return;
       }
 
       const meta = await createPdfNoteFromPicker({ folderId: null, title });
       if (meta) {
-        void recordReviewSignal('note_created');
         openNote(meta.id);
       }
     } catch (error) {
@@ -226,32 +232,16 @@ export default function LibraryScreen() {
     );
   }, [refresh]);
 
-  const openUrl = useCallback(async (url: string) => {
-    await openExternalLink(url, 'LibraryScreen');
-  }, []);
-
   return (
     <SafeAreaView edges={['top']} style={[styles.flex, { backgroundColor: theme.colors.background }]}>
       <LibraryHeader
         title="OpenNotes"
         rightActions={[
           {
-            key: 'github',
-            icon: 'logo-github',
-            accessibilityLabel: 'Open OpenNotes on GitHub',
-            onPress: () => void openUrl(OPEN_NOTES_LINKS.github),
-          },
-          {
-            key: 'x',
-            icon: 'logo-x',
-            accessibilityLabel: 'Open Mark Miller on X',
-            onPress: () => void openUrl(OPEN_NOTES_LINKS.x),
-          },
-          {
-            key: 'about',
-            icon: 'information-circle-outline',
-            accessibilityLabel: 'About OpenNotes',
-            onPress: () => setAction({ kind: 'about' }),
+            key: 'openNotes',
+            icon: 'heart-outline',
+            accessibilityLabel: 'Support OpenNotes',
+            onPress: () => setAction({ kind: 'openNotes' }),
           },
         ]}
       />
@@ -313,13 +303,21 @@ export default function LibraryScreen() {
 
       <NewItemFAB onPress={() => setAction({ kind: 'newItem' })} />
 
-      <AboutSheet
-        visible={action?.kind === 'about'}
+      <OpenNotesSheet
+        visible={action?.kind === 'openNotes'}
         onClose={() => setAction(null)}
+        onJoinCommunity={() => void joinCommunity()}
+        onRate={() => void rateOpenNotes()}
         onViewIntroduction={() => {
           setAction(null);
           onboarding.show();
         }}
+      />
+
+      <CommunityInviteSheet
+        visible={action?.kind === 'community'}
+        onClose={() => void dismissCommunity()}
+        onJoin={() => void joinCommunity()}
       />
 
       <OnboardingExperience

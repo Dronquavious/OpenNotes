@@ -17,6 +17,7 @@
     "start": "expo start",
     "ios": "expo run:ios",
     "android": "expo run:android",
+    "test:lifecycle": "node --experimental-strip-types --test scripts/lifecyclePolicy.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

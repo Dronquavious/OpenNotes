@@ -26,7 +26,6 @@ import {
   listFolders,
   renameFolder,
 } from '../../src/services/foldersRepo';
-import { recordReviewSignal } from '../../src/services/reviewPromptService';
 import type { BackgroundType, FolderMetadata, NoteMetadata } from '../../src/types/note';
 
 type Action =
@@ -82,14 +81,12 @@ export default function FolderScreen() {
           backgroundType,
           title: title.trim() || undefined,
         });
-        void recordReviewSignal('note_created');
         router.push(`/note/${meta.id}`);
         return;
       }
 
       const meta = await createPdfNoteFromPicker({ folderId: folder.id, title });
       if (meta) {
-        void recordReviewSignal('note_created');
         router.push(`/note/${meta.id}`);
       }
     } catch (error) {
@@ -168,7 +165,6 @@ export default function FolderScreen() {
                 key={note.id}
                 note={note}
                 onPress={() => {
-                  void recordReviewSignal('note_opened');
                   router.push(`/note/${note.id}`);
                 }}
                 onLongPress={() => {
