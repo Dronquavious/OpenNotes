@@ -12,6 +12,7 @@ import {
   type PickedPdfResult,
 } from './pdfStorage';
 import type { NoteMetadata } from '../types/note';
+import { recordSuccessfulNoteSave } from './lifecycleService';
 
 interface PdfNoteOptions {
   folderId?: string | null;
@@ -55,9 +56,16 @@ async function createPdfNote(
 
     const title = cleanTitle(options.title) || cleanTitle(result.name.replace(/\.pdf$/i, ''));
     const body = createPdfNotebookData(result.pageCount);
-    await saveNoteBody(meta.id, body);
-    await setNoteBackground(meta.id, 'pdf', result.uri);
-    return title ? renameNote(meta.id, title) : setNoteBackground(meta.id, 'pdf', result.uri);
+    const saveResult = await saveNoteBody(meta.id, body);
+    if (!saveResult.ok) {
+      throw new Error('Imported PDF note body could not be saved.');
+    }
+    const withBackground = await setNoteBackground(meta.id, 'pdf', result.uri);
+    const finalMetadata = title
+      ? await renameNote(meta.id, title)
+      : withBackground;
+    await recordSuccessfulNoteSave(meta.id);
+    return finalMetadata;
   } catch (error) {
     await deleteNote(meta.id).catch(() => {});
     throw error;

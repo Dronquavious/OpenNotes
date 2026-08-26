@@ -67,6 +67,7 @@ export function Sheet({ visible, onClose, children }: SheetProps) {
             styles.card,
             {
               backgroundColor: theme.colors.surfaceElevated,
+              maxHeight: height - insets.top - spacing.md,
               paddingBottom: insets.bottom + spacing.lg,
               shadowColor: theme.colors.cardShadow,
             },

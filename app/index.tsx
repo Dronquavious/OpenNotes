@@ -2,17 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
-  Linking,
-  Pressable,
   ScrollView,
   StyleSheet,
-  Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import { Ionicons } from '@expo/vector-icons';
 import { LibraryHeader } from '../src/components/library/LibraryHeader';
 import { NewItemFAB } from '../src/components/library/NewItemFAB';
 import { FolderCard } from '../src/components/library/FolderCard';
@@ -22,10 +18,14 @@ import { ItemActionsMenu } from '../src/components/library/ItemActionsMenu';
 import { RenameDialog } from '../src/components/library/RenameDialog';
 import { FolderPickerSheet } from '../src/components/library/FolderPickerSheet';
 import { CreateNoteBackgroundSheet } from '../src/components/library/CreateNoteBackgroundSheet';
-import { Sheet } from '../src/components/ui/Sheet';
+import { OnboardingExperience } from '../src/components/onboarding/OnboardingExperience';
+import { CommunityInviteSheet } from '../src/components/library/CommunityInviteSheet';
+import { OpenNotesSheet } from '../src/components/library/OpenNotesSheet';
+import { LibrarySection } from '../src/components/library/LibrarySection';
+import { useOnboarding } from '../src/hooks/useOnboarding';
+import { useLibrarySupport } from '../src/hooks/useLibrarySupport';
 import { useTheme } from '../src/hooks/useTheme';
 import { spacing } from '../src/theme/spacing';
-import { typography } from '../src/theme/typography';
 import {
   createNote,
   deleteNote,
@@ -40,23 +40,12 @@ import {
   listFolders,
   renameFolder,
 } from '../src/services/foldersRepo';
-import {
-  recordReviewSignal,
-  requestReviewAfterPositiveMoment,
-} from '../src/services/reviewPromptService';
 import type { BackgroundType, FolderMetadata, NoteMetadata } from '../src/types/note';
-
-const LEGAL_URLS = {
-  privacy: 'https://mathnotes-app.github.io/OpenNotes/privacy/',
-  terms: 'https://mathnotes-app.github.io/OpenNotes/terms/',
-  support: 'https://mathnotes-app.github.io/OpenNotes/support/',
-  github: 'https://github.com/mathnotes-app/OpenNotes',
-  x: 'https://x.com/markpm39',
-};
 
 type Action =
   | { kind: 'newItem' }
-  | { kind: 'about' }
+  | { kind: 'openNotes' }
+  | { kind: 'community' }
   | { kind: 'createNoteBackground' }
   | { kind: 'noteMenu'; note: NoteMetadata }
   | { kind: 'folderMenu'; folder: FolderMetadata }
@@ -73,6 +62,7 @@ export default function LibraryScreen() {
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<Action | null>(null);
   const creatingNoteRef = useRef(false);
+  const onboarding = useOnboarding();
 
   const refresh = useCallback(async () => {
     const [allNotes, allFolders] = await Promise.all([
@@ -91,9 +81,20 @@ export default function LibraryScreen() {
   useFocusEffect(
     useCallback(() => {
       void refresh();
-      void requestReviewAfterPositiveMoment();
     }, [refresh]),
   );
+
+  const closeSupport = useCallback(() => setAction(null), []);
+  const showCommunity = useCallback(
+    () => setAction({ kind: 'community' }),
+    [],
+  );
+  const { dismissCommunity, joinCommunity, rateOpenNotes } = useLibrarySupport({
+    canShowAutomaticPrompt:
+      onboarding.ready && !onboarding.visible && action === null,
+    onClose: closeSupport,
+    onShowCommunity: showCommunity,
+  });
 
   const rootNotes = useMemo(
     () =>
@@ -117,7 +118,6 @@ export default function LibraryScreen() {
   const openNote = useCallback(
     (id: string) => {
       void Haptics.selectionAsync();
-      void recordReviewSignal('note_opened');
       router.push(`/note/${id}`);
     },
     [router],
@@ -142,14 +142,12 @@ export default function LibraryScreen() {
           backgroundType,
           title: title.trim() || undefined,
         });
-        void recordReviewSignal('note_created');
         openNote(meta.id);
         return;
       }
 
       const meta = await createPdfNoteFromPicker({ folderId: null, title });
       if (meta) {
-        void recordReviewSignal('note_created');
         openNote(meta.id);
       }
     } catch (error) {
@@ -234,41 +232,20 @@ export default function LibraryScreen() {
     );
   }, [refresh]);
 
-  const openUrl = useCallback(async (url: string) => {
-    try {
-      await Linking.openURL(url);
-    } catch (error) {
-      if (__DEV__) console.warn('[LibraryScreen] open link failed', error);
-      Alert.alert('Could not open link', 'Please try again.');
-    }
-  }, []);
-
   return (
     <SafeAreaView edges={['top']} style={[styles.flex, { backgroundColor: theme.colors.background }]}>
       <LibraryHeader
         title="OpenNotes"
         rightActions={[
           {
-            key: 'github',
-            icon: 'logo-github',
-            accessibilityLabel: 'Open OpenNotes on GitHub',
-            onPress: () => void openUrl(LEGAL_URLS.github),
-          },
-          {
-            key: 'x',
-            icon: 'logo-x',
-            accessibilityLabel: 'Open Mark Miller on X',
-            onPress: () => void openUrl(LEGAL_URLS.x),
-          },
-          {
-            key: 'about',
-            icon: 'information-circle-outline',
-            accessibilityLabel: 'About OpenNotes',
-            onPress: () => setAction({ kind: 'about' }),
+            key: 'openNotes',
+            icon: 'heart-outline',
+            accessibilityLabel: 'Support OpenNotes',
+            onPress: () => setAction({ kind: 'openNotes' }),
           },
         ]}
       />
-      {loading ? (
+      {loading || !onboarding.ready ? (
         <View style={styles.loader}>
           <ActivityIndicator color={theme.colors.accent} />
         </View>
@@ -284,7 +261,7 @@ export default function LibraryScreen() {
           showsVerticalScrollIndicator={false}
         >
           {sortedFolders.length > 0 ? (
-            <Section title="Folders" theme={theme}>
+            <LibrarySection title="Folders">
               <View style={styles.list}>
                 {sortedFolders.map((folder) => (
                   <FolderCard
@@ -300,11 +277,11 @@ export default function LibraryScreen() {
                   />
                 ))}
               </View>
-            </Section>
+            </LibrarySection>
           ) : null}
 
           {rootNotes.length > 0 ? (
-            <Section title={sortedFolders.length > 0 ? 'Notes' : ''} theme={theme}>
+            <LibrarySection title={sortedFolders.length > 0 ? 'Notes' : ''}>
               <View style={styles.list}>
                 {rootNotes.map((note) => (
                   <NoteCard
@@ -319,16 +296,33 @@ export default function LibraryScreen() {
                   />
                 ))}
               </View>
-            </Section>
+            </LibrarySection>
           ) : null}
         </ScrollView>
       )}
 
       <NewItemFAB onPress={() => setAction({ kind: 'newItem' })} />
 
-      <AboutSheet
-        visible={action?.kind === 'about'}
+      <OpenNotesSheet
+        visible={action?.kind === 'openNotes'}
         onClose={() => setAction(null)}
+        onJoinCommunity={() => void joinCommunity()}
+        onRate={() => void rateOpenNotes()}
+        onViewIntroduction={() => {
+          setAction(null);
+          onboarding.show();
+        }}
+      />
+
+      <CommunityInviteSheet
+        visible={action?.kind === 'community'}
+        onClose={() => void dismissCommunity()}
+        onJoin={() => void joinCommunity()}
+      />
+
+      <OnboardingExperience
+        visible={onboarding.ready && onboarding.visible}
+        onComplete={onboarding.finish}
       />
 
       <ItemActionsMenu
@@ -482,117 +476,6 @@ export default function LibraryScreen() {
   );
 }
 
-function AboutSheet({
-  visible,
-  onClose,
-}: {
-  visible: boolean;
-  onClose: () => void;
-}) {
-  const theme = useTheme();
-  const openUrl = useCallback(async (url: string) => {
-    try {
-      await Linking.openURL(url);
-    } catch (error) {
-      if (__DEV__) console.warn('[AboutSheet] open link failed', error);
-      Alert.alert('Could not open link', 'Please try again.');
-    }
-  }, []);
-
-  return (
-    <Sheet visible={visible} onClose={onClose}>
-      <View style={styles.aboutHeader}>
-        <View style={[styles.aboutIcon, { backgroundColor: theme.colors.accentMuted }]}>
-          <Ionicons name="information-circle-outline" size={22} color={theme.colors.accent} />
-        </View>
-        <View style={styles.aboutTitleBlock}>
-          <Text style={[typography.title, { color: theme.colors.text }]}>
-            About OpenNotes
-          </Text>
-          <Text style={[typography.footnote, { color: theme.colors.textSecondary }]}>
-            Simple notes, open foundations.
-          </Text>
-        </View>
-      </View>
-
-      <Text style={[typography.callout, styles.aboutBody, { color: theme.colors.text }]}>
-        OpenNotes is meant to be a no-bloat, simple, free, open source notes
-        app. Most notes apps collect years of extra features, put important
-        tools behind a subscription, and keep the underlying ink technology
-        closed source.
-      </Text>
-      <Text style={[typography.callout, styles.aboutBody, { color: theme.colors.text }]}>
-        It is also local and privacy focused: we do not collect anything, and
-        your notes never leave your device.
-      </Text>
-      <Text style={[typography.callout, styles.aboutBody, { color: theme.colors.text }]}>
-        This app is starting from the opposite idea: keep the experience focused,
-        make the core technology inspectable, and build only what actually helps
-        people write.
-      </Text>
-      <Text style={[typography.footnote, styles.aboutBody, { color: theme.colors.textSecondary }]}>
-        OpenNotes is powered by the open source Mobile Ink engine.
-      </Text>
-      <View style={styles.aboutLinks}>
-        <AboutLink label="Privacy" onPress={() => void openUrl(LEGAL_URLS.privacy)} />
-        <AboutLink label="Terms" onPress={() => void openUrl(LEGAL_URLS.terms)} />
-        <AboutLink label="Support" onPress={() => void openUrl(LEGAL_URLS.support)} />
-      </View>
-    </Sheet>
-  );
-}
-
-function AboutLink({ label, onPress }: { label: string; onPress: () => void }) {
-  const theme = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="link"
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.aboutLink,
-        { borderColor: theme.colors.divider },
-        pressed && { opacity: 0.65 },
-      ]}
-    >
-      <Text style={[typography.callout, styles.aboutLinkText, { color: theme.colors.accent }]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-function Section({
-  title,
-  theme,
-  children,
-}: {
-  title: string;
-  theme: ReturnType<typeof useTheme>;
-  children: React.ReactNode;
-}) {
-  return (
-    <View style={{ marginBottom: spacing.lg }}>
-      {title ? (
-        <Text
-          style={[
-            typography.footnote,
-            {
-              color: theme.colors.textSecondary,
-              textTransform: 'uppercase',
-              letterSpacing: 1,
-              paddingHorizontal: spacing.lg,
-              marginBottom: spacing.sm,
-            },
-          ]}
-        >
-          {title}
-        </Text>
-      ) : null}
-      {children}
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   loader: {
@@ -611,42 +494,5 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     columnGap: spacing.md,
     rowGap: spacing.lg,
-  },
-  aboutHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    marginBottom: spacing.lg,
-  },
-  aboutIcon: {
-    alignItems: 'center',
-    borderRadius: 18,
-    height: 36,
-    justifyContent: 'center',
-    marginRight: spacing.md,
-    width: 36,
-  },
-  aboutTitleBlock: {
-    flex: 1,
-  },
-  aboutBody: {
-    lineHeight: 22,
-    marginBottom: spacing.md,
-  },
-  aboutLinks: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    marginTop: spacing.xs,
-  },
-  aboutLink: {
-    alignItems: 'center',
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
-    minHeight: 34,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.md,
-  },
-  aboutLinkText: {
-    fontWeight: '600',
   },
 });
