@@ -10,21 +10,17 @@ import {
   type CommunityPromptState,
   type LifecycleState,
 } from './lifecyclePolicy';
+import { createPromiseQueue } from '../utils/promiseQueue';
 
 const LIFECYCLE_KEY = '@opennotes:lifecycle:v1';
 const APP_VERSION = Constants.expoConfig?.version ?? 'unknown';
 
-let stateQueue: Promise<void> = Promise.resolve();
+const stateQueue = createPromiseQueue();
 let reviewRequest: Promise<boolean> | null = null;
 let communityPromptClaimedThisSession = false;
 
 function withStateLock<T>(operation: () => Promise<T>): Promise<T> {
-  const result = stateQueue.then(operation, operation);
-  stateQueue = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  return result;
+  return stateQueue.enqueue(operation);
 }
 
 async function readStateUnlocked(): Promise<LifecycleState> {

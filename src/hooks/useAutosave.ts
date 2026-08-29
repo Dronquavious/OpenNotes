@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
 
 const DEFAULT_DEBOUNCE_MS = 350;
 
@@ -18,7 +19,8 @@ export function useAutosave({
   enabled = true,
 }: UseAutosaveOptions) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inFlightRef = useRef<Promise<void> | null>(null);
+  const inFlightRef = useRef<Promise<boolean> | null>(null);
+  const dirtyRef = useRef(false);
   const onSaveRef = useRef(onSave);
   const onStatusRef = useRef(onStatusChange);
   const enabledRef = useRef(enabled);
@@ -35,19 +37,24 @@ export function useAutosave({
     enabledRef.current = enabled;
   }, [enabled]);
 
-  const runSave = useCallback(async (): Promise<void> => {
-    if (!enabledRef.current) return;
+  const runSave = useCallback(async (): Promise<boolean> => {
+    if (!enabledRef.current) return true;
+    // Cleared before the save so changes made while it runs mark dirty again.
+    dirtyRef.current = false;
     onStatusRef.current?.('saving');
     try {
       await onSaveRef.current();
       onStatusRef.current?.('saved');
+      return true;
     } catch (error) {
+      dirtyRef.current = true;
       if (__DEV__) console.warn('[useAutosave] save failed', error);
       onStatusRef.current?.('error');
+      return false;
     }
   }, []);
 
-  const flushNow = useCallback(async (): Promise<void> => {
+  const flushNow = useCallback(async (): Promise<boolean> => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -55,9 +62,10 @@ export function useAutosave({
     if (inFlightRef.current) {
       await inFlightRef.current;
     }
+    if (!dirtyRef.current) return true;
     const promise = runSave();
     inFlightRef.current = promise;
-    await promise.finally(() => {
+    return promise.finally(() => {
       if (inFlightRef.current === promise) inFlightRef.current = null;
     });
   }, [runSave]);
@@ -70,14 +78,9 @@ export function useAutosave({
     onStatusRef.current?.('idle');
   }, []);
 
-  const waitForIdle = useCallback(async (): Promise<void> => {
-    if (inFlightRef.current) {
-      await inFlightRef.current;
-    }
-  }, []);
-
   const schedule = useCallback(() => {
     if (!enabledRef.current) return;
+    dirtyRef.current = true;
     onStatusRef.current?.('pending');
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
@@ -89,6 +92,18 @@ export function useAutosave({
     }, debounceMs);
   }, [debounceMs, runSave]);
 
+  // Flush the moment the app leaves the foreground: JS timers do not fire in
+  // the background, so a pending debounced save would otherwise sit unsaved
+  // until the app returns — and be lost if it never does.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'background' || state === 'inactive') {
+        void flushNow();
+      }
+    });
+    return () => subscription.remove();
+  }, [flushNow]);
+
   useEffect(() => {
     return () => {
       if (timerRef.current) {
@@ -98,5 +113,5 @@ export function useAutosave({
     };
   }, []);
 
-  return { schedule, flushNow, cancelPending, waitForIdle };
+  return { schedule, flushNow, cancelPending };
 }

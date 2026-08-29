@@ -12,7 +12,9 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
+  Text,
   View,
   useWindowDimensions,
 } from 'react-native';
@@ -51,6 +53,7 @@ import {
   renameNote,
   saveNoteBody,
 } from '../../src/services/notesRepo';
+import { createEmptyNotebookData } from '../../src/services/noteBodyStorage';
 import {
   pickFromCamera,
   pickFromLibrary,
@@ -59,6 +62,8 @@ import {
 import { exportNotebookAsPdf } from '../../src/services/exportService';
 import { recordSuccessfulNoteSave } from '../../src/services/lifecycleService';
 import { textBoxId, insertedElementId } from '../../src/utils/id';
+import { spacing } from '../../src/theme/spacing';
+import { typography } from '../../src/theme/typography';
 import type { NoteMetadata } from '../../src/types/note';
 import type { ToolDescriptor } from '../../src/utils/toolPalette';
 
@@ -133,7 +138,9 @@ export default function NoteScreen() {
   const pendingBodyRef = useRef<SerializedNotebookData | null>(null);
   const canvasReadyRef = useRef(false);
   const isMountedRef = useRef(true);
-  const navigatingRef = useRef(false);
+  // Exit flow state: 'editing' (normal), 'confirming' (final save running or
+  // its failure dialog showing), 'navigating' (leaving; UI updates frozen).
+  const exitRef = useRef<'editing' | 'confirming' | 'navigating'>('editing');
   const fingerDrawingPrefLoadedRef = useRef(false);
   const storedPreviewByPageIdRef = useRef(new Map<string, PagePreviewSnapshot>());
   const lastPenToolRef = useRef<'pen' | 'highlighter' | 'crayon' | 'calligraphy'>('pen');
@@ -151,6 +158,11 @@ export default function NoteScreen() {
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const [autosaveStatus, setAutosaveStatus] = useState<AutosaveStatus>('idle');
   const [loading, setLoading] = useState(true);
+  const [bodyLoadFailed, setBodyLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  // Autosave stays disabled until the body has loaded (or the user explicitly
+  // chose to start blank), so nothing can overwrite an unread body on disk.
+  const [bodyReady, setBodyReady] = useState(false);
   const [selection, setSelection] = useState<OverlaySelection | null>(null);
   const [action, setAction] = useState<EditorAction | null>(null);
   const [isExporting, setIsExporting] = useState(false);
@@ -189,7 +201,7 @@ export default function NoteScreen() {
   }, []);
 
   const persistMerged = useCallback(async () => {
-    if (!id || !canvasRef.current || navigatingRef.current) return;
+    if (!id || !canvasRef.current) return;
     const canvasData = await canvasRef.current.getNotebookData();
     const overlay = overlayMapRef.current;
     const mergedPages = mergeStoredPreviews(canvasData.pages).map((page) => {
@@ -218,11 +230,10 @@ export default function NoteScreen() {
     schedule: scheduleAutosave,
     flushNow,
     cancelPending: cancelPendingAutosave,
-    waitForIdle: waitForAutosaveIdle,
   } = useAutosave({
     onSave: persistMerged,
     onStatusChange: safeStatusChange,
-    enabled: Boolean(id) && autosaveEnabled,
+    enabled: Boolean(id) && autosaveEnabled && bodyReady,
   });
 
   useEffect(() => {
@@ -264,44 +275,51 @@ export default function NoteScreen() {
     });
   }, [fingerDrawingEnabled]);
 
+  const applyNotebookData = useCallback(
+    (notebookData: SerializedNotebookData) => {
+      rememberPagePreviews(notebookData.pages);
+      setEnginePages(mergeStoredPreviews(notebookData.pages));
+      const initialMap = new Map<string, PageOverlayState>();
+      for (const page of notebookData.pages) {
+        initialMap.set(page.id, overlayFromPage(page));
+      }
+      setOverlayMap(initialMap);
+      setBodyReady(true);
+      if (canvasReadyRef.current) {
+        void canvasRef.current?.loadNotebookData(notebookData);
+      } else {
+        pendingBodyRef.current = notebookData;
+      }
+    },
+    [mergeStoredPreviews, rememberPagePreviews],
+  );
+
   // Initial load
   useEffect(() => {
     let cancelled = false;
     if (!id) return;
     storedPreviewByPageIdRef.current = new Map();
+    setBodyReady(false);
+    setBodyLoadFailed(false);
     setEnginePages([]);
     setCurrentPageIndex(0);
+    setLoading(true);
     (async () => {
       try {
-        const meta = await getNote(id);
-        if (!cancelled && meta) setMetadata(meta);
-        const body = await readNoteBody(id);
+        const [meta, body] = await Promise.all([getNote(id), readNoteBody(id)]);
         if (cancelled) return;
-        const notebookData: SerializedNotebookData = body ?? {
-          version: '1.0',
-          pages: [
-            {
-              id: 'page-1',
-              title: 'Page 1',
-              data: '{"pages":{}}',
-              rotation: 0,
-            },
-          ],
-        };
-        rememberPagePreviews(notebookData.pages);
-        setEnginePages(mergeStoredPreviews(notebookData.pages));
-        const initialMap = new Map<string, PageOverlayState>();
-        for (const page of notebookData.pages) {
-          initialMap.set(page.id, overlayFromPage(page));
+        if (meta) setMetadata(meta);
+        if (body.kind === 'unreadable') {
+          // A body file exists but cannot be read. Never fall back to an empty
+          // notebook here: autosave would overwrite the file and destroy
+          // whatever it still contains.
+          setBodyLoadFailed(true);
+          return;
         }
-        setOverlayMap(initialMap);
-        if (canvasReadyRef.current) {
-          void canvasRef.current?.loadNotebookData(notebookData);
-        } else {
-          pendingBodyRef.current = notebookData;
-        }
+        applyNotebookData(body.kind === 'ok' ? body.data : createEmptyNotebookData());
       } catch (error) {
         if (__DEV__) console.warn('[NoteScreen] load failed', error);
+        if (!cancelled) setBodyLoadFailed(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -309,7 +327,29 @@ export default function NoteScreen() {
     return () => {
       cancelled = true;
     };
-  }, [id, mergeStoredPreviews, rememberPagePreviews]);
+  }, [id, applyNotebookData, loadAttempt]);
+
+  const retryLoad = useCallback(() => {
+    setLoadAttempt((value) => value + 1);
+  }, []);
+
+  const startBlankAfterLoadFailure = useCallback(() => {
+    Alert.alert(
+      'Start with a blank note?',
+      'The existing contents of this note could not be read. Starting blank will replace them the next time the note saves.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start blank',
+          style: 'destructive',
+          onPress: () => {
+            setBodyLoadFailed(false);
+            applyNotebookData(createEmptyNotebookData());
+          },
+        },
+      ],
+    );
+  }, [applyNotebookData]);
 
   const handleCanvasReady = useCallback(() => {
     canvasReadyRef.current = true;
@@ -321,7 +361,7 @@ export default function NoteScreen() {
   }, []);
 
   const handlePagesChange = useCallback((next: NotebookPage[]) => {
-    if (!isMountedRef.current || navigatingRef.current) return;
+    if (!isMountedRef.current || exitRef.current === 'navigating') return;
     rememberPagePreviews(next);
     const pagesWithPreviews = mergeStoredPreviews(next);
     setEnginePages(pagesWithPreviews);
@@ -347,20 +387,20 @@ export default function NoteScreen() {
   }, [mergeStoredPreviews, rememberPagePreviews]);
 
   const handleDrawingChange = useCallback(() => {
-    if (navigatingRef.current) return;
+    if (exitRef.current === 'navigating') return;
     scheduleAutosave();
   }, [scheduleAutosave]);
 
   const handleTransform = useCallback(
     (t: Parameters<typeof store.onTransformChange>[0]) => {
-      if (navigatingRef.current) return;
+      if (exitRef.current === 'navigating') return;
       store.onTransformChange(t);
     },
     [store],
   );
 
   const handleCurrentPageChange = useCallback((nextPageIndex: number) => {
-    if (!isMountedRef.current || navigatingRef.current) return;
+    if (!isMountedRef.current || exitRef.current === 'navigating') return;
     setCurrentPageIndex(nextPageIndex);
   }, []);
 
@@ -695,30 +735,59 @@ export default function NoteScreen() {
     rememberPagePreviews,
   ]);
 
+  const navigateHome = useCallback(() => {
+    exitRef.current = 'navigating';
+    cancelPendingAutosave();
+    setAutosaveEnabled(false);
+    try {
+      router.replace('/');
+    } catch (error) {
+      exitRef.current = 'editing';
+      if (__DEV__) console.warn('[NoteScreen] navigation failed', error);
+    }
+  }, [cancelPendingAutosave, router]);
+
+  // Save-then-leave. On failure the user chooses: retry, stay, or explicitly
+  // discard. The named function expression lets the retry button re-invoke it.
+  const attemptSaveAndLeave = useCallback(async function attempt(): Promise<void> {
+    const saved = await flushNow();
+    if (!isMountedRef.current) return;
+    if (saved) {
+      navigateHome();
+      return;
+    }
+    Alert.alert(
+      "Couldn't save your note",
+      'Your latest changes could not be written to storage. Leaving now will discard them.',
+      [
+        { text: 'Try again', onPress: () => void attempt() },
+        {
+          text: 'Leave anyway',
+          style: 'destructive',
+          onPress: () => navigateHome(),
+        },
+        {
+          text: 'Stay',
+          style: 'cancel',
+          onPress: () => {
+            exitRef.current = 'editing';
+          },
+        },
+      ],
+    );
+  }, [flushNow, navigateHome]);
+
   const handleBack = useCallback(async () => {
-    if (navigatingRef.current) return;
-    navigatingRef.current = true;
+    if (exitRef.current !== 'editing') return;
+    exitRef.current = 'confirming';
     Keyboard.dismiss();
     setAction(null);
     setSelection(null);
     setToolPopover(null);
     void Haptics.selectionAsync();
     if (!isMountedRef.current) return;
-    cancelPendingAutosave();
-    setAutosaveEnabled(false);
-    try {
-      await waitForAutosaveIdle();
-    } catch (error) {
-      if (__DEV__) console.warn('[NoteScreen] pending save failed before navigation', error);
-    }
-    if (!isMountedRef.current) return;
-    try {
-      router.replace('/');
-    } catch (error) {
-      navigatingRef.current = false;
-      if (__DEV__) console.warn('[NoteScreen] navigation failed', error);
-    }
-  }, [cancelPendingAutosave, router, waitForAutosaveIdle]);
+    await attemptSaveAndLeave();
+  }, [attemptSaveAndLeave]);
 
   useFocusEffect(
     useCallback(() => {
@@ -747,6 +816,55 @@ export default function NoteScreen() {
   if (!id) {
     return (
       <View style={[styles.flex, { backgroundColor: theme.colors.background }]} />
+    );
+  }
+
+  if (bodyLoadFailed) {
+    return (
+      <View
+        style={[
+          styles.flex,
+          styles.center,
+          { backgroundColor: theme.colors.background, padding: spacing.xl },
+        ]}
+      >
+        <Text style={[typography.title, { color: theme.colors.text, textAlign: 'center' }]}>
+          Couldn't open this note
+        </Text>
+        <Text
+          style={[
+            typography.callout,
+            {
+              color: theme.colors.textSecondary,
+              marginTop: spacing.xs,
+              textAlign: 'center',
+              maxWidth: 320,
+            },
+          ]}
+        >
+          The note's contents could not be read from storage. Nothing has been
+          changed; your data is still on this device.
+        </Text>
+        <Pressable
+          onPress={retryLoad}
+          style={[styles.errorButton, { backgroundColor: theme.colors.accent }]}
+        >
+          <Text style={[typography.headline, styles.errorButtonLabel]}>Try again</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => void handleBack()}
+          style={[styles.errorButton, { backgroundColor: theme.colors.surfaceMuted }]}
+        >
+          <Text style={[typography.headline, { color: theme.colors.text }]}>
+            Back to library
+          </Text>
+        </Pressable>
+        <Pressable onPress={startBlankAfterLoadFailure} style={styles.errorTextButton}>
+          <Text style={[typography.subhead, { color: theme.colors.destructive }]}>
+            Start with a blank note
+          </Text>
+        </Pressable>
+      </View>
     );
   }
 
@@ -900,4 +1018,18 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   center: { alignItems: 'center', justifyContent: 'center' },
   canvasArea: { flex: 1, overflow: 'hidden', position: 'relative' },
+  errorButton: {
+    marginTop: spacing.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xxl,
+    borderRadius: 12,
+    minWidth: 220,
+    alignItems: 'center',
+  },
+  errorButtonLabel: { color: '#FFFFFF' },
+  errorTextButton: {
+    marginTop: spacing.xl,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
 });
