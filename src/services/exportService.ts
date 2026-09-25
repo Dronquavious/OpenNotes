@@ -3,9 +3,15 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { PixelRatio } from 'react-native';
 import { batchExportPages, type SerializedNotebookData } from '@mathnotes/mobile-ink';
+import {
+  buildPdfHtml,
+  NOTE_PAGE_HEIGHT,
+  NOTE_PAGE_WIDTH,
+  PDF_PAGE_HEIGHT,
+  PDF_PAGE_WIDTH,
+  type PrintablePage,
+} from './pdfExportHtml';
 
-const PAGE_WIDTH = 820;
-const PAGE_HEIGHT = 1061;
 const EXPORT_SCALE = 1.0;
 const DEFAULT_NATIVE_BATCH_SIZE = 8;
 const LARGE_NATIVE_BATCH_SIZE = 1;
@@ -16,50 +22,6 @@ export interface ExportOptions {
   data: SerializedNotebookData;
   pdfBackgroundUri?: string | null;
   filename: string;
-}
-
-function buildHtml(pngDataUris: string[]): string {
-  const pageHtml = pngDataUris
-    .map(
-      (uri) => `
-      <div class="page"><img src="${uri}" /></div>
-    `,
-    )
-    .join('');
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    @page { size: letter; margin: 0; }
-    html, body {
-      margin: 0;
-      padding: 0;
-      background: #FFFFFF;
-    }
-    .page {
-      position: relative;
-      width: 100%;
-      height: 792px;
-      page-break-after: avoid;
-      page-break-inside: avoid;
-      overflow: hidden;
-    }
-    .page img {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      display: block;
-      object-fit: fill;
-    }
-  </style>
-</head>
-<body>${pageHtml}</body>
-</html>`;
 }
 
 function delay(ms: number): Promise<void> {
@@ -89,6 +51,73 @@ async function toPrintableImageUri(uri: string | undefined): Promise<string | nu
     if (__DEV__) console.warn('[exportService] could not read preview image', uri, error);
     return null;
   }
+}
+
+function mimeTypeForImage(uri: string): string {
+  const extension = uri.match(/\.([a-z0-9]+)(?:[?#]|$)/i)?.[1]?.toLowerCase();
+  switch (extension) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'heic':
+      return 'image/heic';
+    case 'heif':
+      return 'image/heif';
+    default:
+      throw new Error('Unsupported inserted image format');
+  }
+}
+
+async function embedInsertedImage(uri: string): Promise<string> {
+  if (/^data:image\/(?:png|jpeg|gif|webp|heic|heif);base64,[A-Za-z0-9+/=]+$/.test(uri)) {
+    return uri;
+  }
+  if (!uri.startsWith('file://')) {
+    throw new Error('Inserted image is not stored in a readable file');
+  }
+  const mimeType = mimeTypeForImage(uri);
+  const base64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  if (!base64) throw new Error('Inserted image file is empty');
+  return 'data:' + mimeType + ';base64,' + base64;
+}
+
+async function preparePrintablePages(
+  data: SerializedNotebookData,
+  rasterUris: string[],
+): Promise<PrintablePage[]> {
+  const cachedImages = new Map<string, string>();
+  const pages: PrintablePage[] = [];
+  for (let index = 0; index < data.pages.length; index += 1) {
+    const page = data.pages[index];
+    const images: PrintablePage['images'] = [];
+    for (const element of page.insertedElements ?? []) {
+      const sourceUri = element.sourceUri ?? element.renderedImageUri;
+      if (!sourceUri) {
+        if (element.type === 'image') throw new Error('Inserted image has no source');
+        continue;
+      }
+      let dataUri = cachedImages.get(sourceUri);
+      if (!dataUri) {
+        dataUri = await embedInsertedImage(sourceUri);
+        cachedImages.set(sourceUri, dataUri);
+      }
+      images.push({ element, dataUri });
+    }
+    pages.push({
+      rasterUri: rasterUris[index],
+      images,
+      textBoxes: page.textBoxes ?? [],
+    });
+  }
+  return pages;
 }
 
 async function renderNativePagesInChunks(options: {
@@ -199,8 +228,8 @@ export async function exportNotebookAsPdf(
   try {
     const pixelRatio = PixelRatio.get();
     const nativeScale = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1;
-    const exportWidth = Math.round(PAGE_WIDTH * nativeScale);
-    const exportHeight = Math.round(PAGE_HEIGHT * nativeScale);
+    const exportWidth = Math.round(NOTE_PAGE_WIDTH * nativeScale);
+    const exportHeight = Math.round(NOTE_PAGE_HEIGHT * nativeScale);
     const pages = await collectExportImages({
       data,
       exportWidth,
@@ -217,9 +246,12 @@ export async function exportNotebookAsPdf(
       };
     }
 
-    const html = buildHtml(pages);
+    const printablePages = await preparePrintablePages(data, pages);
+    const html = buildPdfHtml(printablePages);
     const printed = await Print.printToFileAsync({
       html,
+      width: PDF_PAGE_WIDTH,
+      height: PDF_PAGE_HEIGHT,
       base64: false,
     });
 
