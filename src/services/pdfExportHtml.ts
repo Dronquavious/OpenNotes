@@ -4,6 +4,10 @@ export const NOTE_PAGE_WIDTH = 820;
 export const NOTE_PAGE_HEIGHT = 1061;
 export const PDF_PAGE_WIDTH = 612;
 export const PDF_PAGE_HEIGHT = 792;
+// expo-print uses PDF points for page size, while HTML uses 96 CSS pixels per inch.
+const CSS_PIXELS_PER_POINT = 96 / 72;
+const CSS_PAGE_WIDTH = PDF_PAGE_WIDTH * CSS_PIXELS_PER_POINT;
+const CSS_PAGE_HEIGHT = PDF_PAGE_HEIGHT * CSS_PIXELS_PER_POINT;
 
 export interface PrintableImage {
   element: InsertedElement;
@@ -17,11 +21,11 @@ export interface PrintablePage {
 }
 
 const CONTENT_SCALE = Math.min(
-  PDF_PAGE_WIDTH / NOTE_PAGE_WIDTH,
-  PDF_PAGE_HEIGHT / NOTE_PAGE_HEIGHT,
+  CSS_PAGE_WIDTH / NOTE_PAGE_WIDTH,
+  CSS_PAGE_HEIGHT / NOTE_PAGE_HEIGHT,
 );
-const CONTENT_LEFT = (PDF_PAGE_WIDTH - NOTE_PAGE_WIDTH * CONTENT_SCALE) / 2;
-const CONTENT_TOP = (PDF_PAGE_HEIGHT - NOTE_PAGE_HEIGHT * CONTENT_SCALE) / 2;
+const CONTENT_LEFT = (CSS_PAGE_WIDTH - NOTE_PAGE_WIDTH * CONTENT_SCALE) / 2;
+const CONTENT_TOP = (CSS_PAGE_HEIGHT - NOTE_PAGE_HEIGHT * CONTENT_SCALE) / 2;
 
 function finite(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -97,12 +101,15 @@ export function buildPdfHtml(pages: PrintablePage[]): string {
     '<meta name="viewport" content="width=device-width, initial-scale=1" />' +
     '<style>' +
     '*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff}' +
-    '@page{size:612px 792px;margin:0}' +
-    '.page{position:relative;width:612px;height:792px;margin:0;' +
+    '@page{size:letter;margin:0}' +
+    '.page{position:relative;width:' + PDF_PAGE_WIDTH / 72 +
+    'in;height:' + PDF_PAGE_HEIGHT / 72 + 'in;margin:0;' +
     'overflow:hidden;page-break-inside:avoid;break-inside:avoid}' +
     '.page:not(:last-child){page-break-after:always;break-after:page}' +
-    '.content{position:absolute;width:820px;height:1061px;transform-origin:top left}' +
-    '.raster{position:absolute;left:0;top:0;width:820px;height:1061px;' +
+    '.content{position:absolute;width:' + NOTE_PAGE_WIDTH + 'px;height:' +
+    NOTE_PAGE_HEIGHT + 'px;transform-origin:top left}' +
+    '.raster{position:absolute;left:0;top:0;width:' + NOTE_PAGE_WIDTH +
+    'px;height:' + NOTE_PAGE_HEIGHT + 'px;' +
     'object-fit:contain;display:block}' +
     '.inserted-image{position:absolute;overflow:hidden;border-radius:4px}' +
     '.inserted-image img{position:absolute;max-width:none;max-height:none;' +

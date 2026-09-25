@@ -157,7 +157,9 @@ test('page HTML preserves a uniform scale and escapes typed text', () => {
       color: '#000000',
     }],
   }]);
-  assert.match(html, /transform:scale\(0\.746\d+/);
+  assert.match(html, /transform:scale\(0\.995\d+/);
+  assert.match(html, /@page\{size:letter;margin:0\}/);
+  assert.match(html, /width:8\.5in;height:11in/);
   assert.match(html, /object-fit:contain/);
   assert.doesNotMatch(html, /object-fit:fill/);
   assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
