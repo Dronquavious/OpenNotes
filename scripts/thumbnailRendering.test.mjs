@@ -116,6 +116,13 @@ test('overlapping images respect their z-order', async () => {
   assert.deepEqual(pixel(result, 100, 100), [0, 0, 255, 255]);
 });
 
+test('legacy images without zIndex retain the editor sibling order beside explicit index one', async () => {
+  const result = await harness().createPageThumbnail(page([
+    photo(red, { id: 'front', zIndex: 1 }), photo(blue, { id: 'legacy' }),
+  ]));
+  assert.deepEqual(pixel(result, 100, 100), [255, 0, 0, 255]);
+});
+
 test('rotation is applied around the image center', async () => {
   const result = await harness().createPageThumbnail(page([photo(red, { width: 200, height: 100, rotation: 90 })]));
   assert.deepEqual(pixel(result, 100, 110), [255, 0, 0, 255]);

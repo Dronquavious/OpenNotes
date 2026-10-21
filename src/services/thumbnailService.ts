@@ -46,7 +46,8 @@ async function composePageThumbnail(
   if (!page) return null;
   const elements = [...(page.insertedElements ?? [])]
     .filter(element => element.type === 'image' || element.sourceUri || element.renderedImageUri)
-    .sort((a, b) => finite(a.zIndex, 1) - finite(b.zIndex, 1));
+    .sort((a, b) => finite(a.zIndex, 1) - finite(b.zIndex, 1)
+      || finite(a.zIndex, 0) - finite(b.zIndex, 0));
   const textBoxes = (page.textBoxes ?? []).filter(box => Boolean(box.content));
   if (!elements.length && !textBoxes.length) return page.previewUri ?? null;
 
