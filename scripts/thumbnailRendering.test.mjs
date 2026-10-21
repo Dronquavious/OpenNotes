@@ -44,12 +44,18 @@ const red = solid('#ff0000');
 const blue = solid('#0000ff');
 const black = solid('#000000');
 
-function harness({ nativeFails = false } = {}) {
+function harness({ nativeFails = false, nativeParagraphBuilder = false } = {}) {
   const exports = {};
   const nativeCalls = [];
   vm.runInNewContext(source, { exports, require(name) {
     if (name === '../utils/promiseQueue') return { createPromiseQueue };
-    if (name === '@shopify/react-native-skia') return { Skia, ClipOp: { Intersect: 1 } };
+    if (name === '@shopify/react-native-skia') return { Skia: nativeParagraphBuilder ? {
+      ...Skia, ParagraphBuilder: { Make: (...args) => {
+        const builder = Skia.ParagraphBuilder.Make(...args);
+        builder.dispose = undefined;
+        return builder;
+      } },
+    } : Skia, ClipOp: { Intersect: 1 } };
     if (name === '@mathnotes/mobile-ink') return { batchExportPages: async (...args) => {
       nativeCalls.push(args);
       if (nativeFails) throw new Error('Native renderer unavailable');
@@ -182,6 +188,14 @@ test('typed text is included and clipped to its original text box', async () => 
   }
   assert.ok(darkPixels > 30, 'Expected visible text glyphs inside the text box');
   assert.deepEqual(pixel(result, 60, 95), [255, 255, 255, 255]);
+});
+
+test('native paragraph builders without an explicit dispose method still produce a complete cover', async () => {
+  const result = await harness({ nativeParagraphBuilder: true }).createPageThumbnail(page([photo()], {
+    textBoxes: [{ id: 'caption', content: 'Caption', color: '#123456',
+      x: 100, y: 400, width: 300, height: 100, fontSize: 40 }],
+  }));
+  assert.deepEqual(pixel(result, 100, 100), [255, 0, 0, 255]);
 });
 
 test('legacy renderedImageUri assets are supported without sourceUri', async () => {

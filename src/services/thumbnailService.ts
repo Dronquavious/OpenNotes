@@ -127,7 +127,8 @@ async function composePageThumbnail(
         canvas.restore();
       } finally {
         paragraph.dispose();
-        builder.dispose();
+        // Skia 2.2's native builder is garbage-collected and omits this method.
+        builder.dispose?.();
       }
     }
     for (const element of elements.filter(element => finite(element.zIndex, 1) > 0)) {
