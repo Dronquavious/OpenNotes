@@ -31,4 +31,5 @@ export interface NoteMetadata {
   backgroundType: BackgroundType;
   pdfUri: string | null;
   thumbnailUri: string | null;
+  thumbnailVersion?: number;
 }

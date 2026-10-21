@@ -7,6 +7,7 @@ import { pruneTombstones } from './catalogStore';
 import { deleteBody, readBody, writeBody, type BodyReadResult } from './noteBodyStorage';
 import { deletePdfForNote } from './pdfStorage';
 import { deleteImagesForNote } from './imageInsertStorage';
+import { createPageThumbnail, THUMBNAIL_VERSION } from './thumbnailService';
 
 export async function listAllMetadata(): Promise<NoteMetadata[]> {
   const catalog = await catalogStore.getCatalog();
@@ -74,6 +75,38 @@ export async function readNoteBody(id: string): Promise<BodyReadResult> {
   return readBody(id);
 }
 
+const pendingThumbnails = new Map<string, Promise<string | null>>();
+
+/** Repairs legacy covers without rewriting bodies or changing library order. */
+export function getNoteThumbnail(note: NoteMetadata): Promise<string | null> {
+  if (note.thumbnailVersion === THUMBNAIL_VERSION) return Promise.resolve(note.thumbnailUri);
+  const pending = pendingThumbnails.get(note.id);
+  if (pending) return pending;
+  const repair = (async () => {
+    try {
+      const body = await readBody(note.id);
+      if (body.kind !== 'ok') return note.thumbnailUri;
+      const uri = await createPageThumbnail(body.data.pages[0], note.backgroundType, note.pdfUri);
+      let currentUri = note.thumbnailUri;
+      await catalogStore.mutate(catalog => {
+        const current = catalog.notes.find(candidate => candidate.id === note.id);
+        currentUri = current?.thumbnailUri ?? null;
+        if (!current || current.updatedAt !== note.updatedAt || current.thumbnailVersion === THUMBNAIL_VERSION) return null;
+        currentUri = uri;
+        return { ...catalog, notes: catalog.notes.map(candidate => candidate.id === note.id
+          ? { ...candidate, thumbnailUri: uri, thumbnailVersion: THUMBNAIL_VERSION } : candidate) };
+      });
+      return currentUri;
+    } catch {
+      return note.thumbnailUri;
+    } finally {
+      pendingThumbnails.delete(note.id);
+    }
+  })();
+  pendingThumbnails.set(note.id, repair);
+  return repair;
+}
+
 export async function saveNoteBody(
   id: string,
   data: SerializedNotebookData,
@@ -84,9 +117,18 @@ export async function saveNoteBody(
     // pointing at the last version that actually persisted.
     return { ok: false, metadata: null };
   }
-  const previewUri = data.pages[0]?.previewUri ?? null;
+  let previewUri = data.pages[0]?.previewUri ?? null;
+  let thumbnailVersion: number | undefined;
+  try {
+    const current = await getNote(id);
+    previewUri = await createPageThumbnail(data.pages[0], current?.backgroundType, current?.pdfUri);
+    thumbnailVersion = THUMBNAIL_VERSION;
+  } catch {
+    // Preview generation is disposable; it must never block a durable note save.
+  }
   const meta = await updateMetadata(id, {
     thumbnailUri: previewUri,
+    thumbnailVersion,
     updatedAt: new Date().toISOString(),
   });
   return { ok: true, metadata: meta };

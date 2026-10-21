@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../hooks/useTheme';
@@ -7,6 +7,7 @@ import { radius, spacing } from '../../theme/spacing';
 import { typography } from '../../theme/typography';
 import { formatRelative } from '../../utils/relativeTime';
 import type { NoteMetadata } from '../../types/note';
+import { getNoteThumbnail } from '../../services/notesRepo';
 
 export interface NoteCardProps {
   note: NoteMetadata;
@@ -18,6 +19,15 @@ export interface NoteCardProps {
 export function NoteCard({ note, onPress, onLongPress, onMenuPress }: NoteCardProps) {
   const theme = useTheme();
   const tileWidth = useLibraryTileWidth();
+  const [cover, setCover] = useState<{ note: NoteMetadata; uri: string | null } | null>(null);
+  const thumbnailUri = cover?.note === note ? cover.uri : note.thumbnailUri;
+  useEffect(() => {
+    let active = true;
+    void getNoteThumbnail(note).then(uri => {
+      if (active) setCover({ note, uri });
+    });
+    return () => { active = false; };
+  }, [note]);
   return (
     <Pressable
       onPress={onPress}
@@ -40,9 +50,9 @@ export function NoteCard({ note, onPress, onLongPress, onMenuPress }: NoteCardPr
           },
         ]}
       >
-        {note.thumbnailUri ? (
+        {thumbnailUri ? (
           <Image
-            source={{ uri: note.thumbnailUri }}
+            source={{ uri: thumbnailUri }}
             style={styles.thumbnailImage}
             resizeMode="cover"
           />
