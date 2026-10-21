@@ -1,0 +1,145 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import vm from 'node:vm';
+import ts from 'typescript';
+import { createPromiseQueue } from '../src/utils/promiseQueue.ts';
+
+const require = createRequire(import.meta.url);
+const initCanvasKit = require('canvaskit-wasm/bin/full/canvaskit.js');
+const kit = await initCanvasKit({ locateFile: file => require.resolve('canvaskit-wasm/bin/full/' + file) });
+const { JsiSkApi } = require('../node_modules/@shopify/react-native-skia/lib/commonjs/skia/web/JsiSkia.js');
+const Skia = JsiSkApi(kit);
+const source = ts.transpileModule(
+  readFileSync(new URL('../src/services/thumbnailService.ts', import.meta.url), 'utf8'),
+  { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+).outputText;
+
+function solid(color, width = 20, height = 20) {
+  const surface = Skia.Surface.Make(width, height);
+  surface.getCanvas().clear(Skia.Color(color));
+  const image = surface.makeImageSnapshot();
+  const uri = 'data:image/png;base64,' + image.encodeToBase64();
+  image.dispose();
+  surface.dispose();
+  return uri;
+}
+
+const white = solid('#ffffff');
+const red = solid('#ff0000');
+const blue = solid('#0000ff');
+const black = solid('#000000');
+
+function harness({ nativeFails = false } = {}) {
+  const exports = {};
+  const nativeCalls = [];
+  vm.runInNewContext(source, { exports, require(name) {
+    if (name === '../utils/promiseQueue') return { createPromiseQueue };
+    if (name === '@shopify/react-native-skia') return { Skia, ClipOp: { Intersect: 1 } };
+    if (name === '@mathnotes/mobile-ink') return { batchExportPages: async (...args) => {
+      nativeCalls.push(args);
+      if (nativeFails) throw new Error('Native renderer unavailable');
+      return [white];
+    } };
+    throw new Error('Unexpected import: ' + name);
+  } });
+  return { ...exports, nativeCalls };
+}
+
+function page(elements = [], extra = {}) {
+  return { id: 'page-1', data: '{"pages":{}}', previewUri: white, insertedElements: elements, ...extra };
+}
+function photo(sourceUri = red, extra = {}) {
+  return { id: 'photo', type: 'image', sourceUri, x: 100, y: 100, width: 200, height: 200, rotation: 0, ...extra };
+}
+function pixel(uri, x, y) {
+  const data = Skia.Data.fromBase64(uri.split(',')[1]);
+  const image = Skia.Image.MakeImageFromEncoded(data);
+  const pixels = image.readPixels(x, y, { width: 1, height: 1, colorType: 4, alphaType: 1 });
+  const result = [...pixels];
+  image.dispose();
+  data.dispose();
+  return result;
+}
+
+test('legacy ink-only previews are returned byte-for-byte without rendering', async () => {
+  const h = harness();
+  assert.equal(await h.createPageThumbnail(page()), white);
+  assert.equal(h.nativeCalls.length, 0);
+  assert.equal(await h.createPageThumbnail(undefined), null);
+});
+
+test('a photo is visible at its page coordinates over the background', async () => {
+  const result = await harness().createPageThumbnail(page([photo()]));
+  assert.deepEqual(pixel(result, 100, 100), [255, 0, 0, 255]);
+  assert.deepEqual(pixel(result, 10, 10), [255, 255, 255, 255]);
+});
+
+test('image-only notes acquire a background even without an ink preview', async () => {
+  const h = harness();
+  const result = await h.createPageThumbnail(page([photo()], { previewUri: undefined }), 'grid');
+  assert.deepEqual(pixel(result, 100, 100), [255, 0, 0, 255]);
+  assert.equal(h.nativeCalls[0][1][0], 'grid');
+});
+
+test('a moved or deleted photo does not remain in the composed thumbnail', async () => {
+  const h = harness();
+  const result = await h.createPageThumbnail(page([photo(red, { x: 400 })]));
+  assert.deepEqual(pixel(result, 100, 100), [255, 255, 255, 255]);
+  assert.deepEqual(pixel(result, 250, 100), [255, 0, 0, 255]);
+  assert.equal(await h.createPageThumbnail(page()), white);
+});
+
+test('overlapping images respect their z-order', async () => {
+  const result = await harness().createPageThumbnail(page([
+    photo(blue, { id: 'front', zIndex: 5 }), photo(red, { id: 'back', zIndex: 1 }),
+  ]));
+  assert.deepEqual(pixel(result, 100, 100), [0, 0, 255, 255]);
+});
+
+test('rotation is applied around the image center', async () => {
+  const result = await harness().createPageThumbnail(page([photo(red, { width: 200, height: 100, rotation: 90 })]));
+  assert.deepEqual(pixel(result, 100, 110), [255, 0, 0, 255]);
+  assert.deepEqual(pixel(result, 60, 75), [255, 255, 255, 255]);
+});
+
+test('crop rectangles select the requested portion of an image', async () => {
+  const surface = Skia.Surface.Make(20, 20);
+  const canvas = surface.getCanvas();
+  canvas.clear(Skia.Color('#ff0000'));
+  const paint = Skia.Paint();
+  paint.setColor(Skia.Color('#0000ff'));
+  canvas.drawRect(Skia.XYWHRect(10, 0, 10, 20), paint);
+  const image = surface.makeImageSnapshot();
+  const uri = 'data:image/png;base64,' + image.encodeToBase64();
+  const result = await harness().createPageThumbnail(page([photo(uri, {
+    width: 100, height: 200, cropRect: { x: 0.5, y: 0, width: 0.5, height: 1 },
+  })]));
+  assert.deepEqual(pixel(result, 75, 100), [0, 0, 255, 255]);
+  image.dispose(); surface.dispose(); paint.dispose();
+});
+
+test('handwriting remains below inserted images', async () => {
+  const result = await harness().createPageThumbnail(page([photo()], { previewUri: black }));
+  assert.deepEqual(pixel(result, 10, 10), [0, 0, 0, 255]);
+  assert.deepEqual(pixel(result, 100, 100), [255, 0, 0, 255]);
+});
+
+test('rendering preserves the original notebook data including unknown legacy fields', async () => {
+  const original = page([photo()], { legacyField: { original: true } });
+  const snapshot = structuredClone(original);
+  await harness().createPageThumbnail(original);
+  assert.deepEqual(original, snapshot);
+});
+
+test('unreadable image assets report failure instead of caching an incomplete cover', async () => {
+  await assert.rejects(harness().createPageThumbnail(page([photo('data:image/png;base64,invalid')])));
+});
+
+test('PDF thumbnails without a preview request the correct background page', async () => {
+  const h = harness();
+  await h.createPageThumbnail(page([photo()], { previewUri: undefined, pdfPageNumber: 3 }), 'pdf', 'file:///lecture.pdf', 1);
+  assert.equal(h.nativeCalls[0][5], 'file:///lecture.pdf');
+  assert.equal(h.nativeCalls[0][6][0], 2);
+});

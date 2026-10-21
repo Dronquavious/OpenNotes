@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Image,
   Keyboard,
   Pressable,
   ScrollView,
@@ -15,6 +14,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { radius, spacing } from '../../theme/spacing';
 import { typography } from '../../theme/typography';
 import { t } from '../../i18n';
+import { PageThumbnailImage } from './PageThumbnailImage';
 
 const SIDEBAR_WIDTH = 136;
 const THUMBNAIL_WIDTH = 78;
@@ -28,6 +28,8 @@ export interface PageSidebarProps {
   bottomInset: number;
   onClose: () => void;
   onJumpToPage: (pageIndex: number) => void;
+  backgroundType: string;
+  pdfUri?: string | null;
 }
 
 function clampPageNumber(value: number, pageCount: number): number {
@@ -43,6 +45,8 @@ export function PageSidebar({
   bottomInset,
   onClose,
   onJumpToPage,
+  backgroundType,
+  pdfUri,
 }: PageSidebarProps) {
   const theme = useTheme();
   const scrollRef = useRef<ScrollView | null>(null);
@@ -168,19 +172,15 @@ export function PageSidebar({
                     active && { shadowColor: theme.colors.accent },
                   ]}
                 >
-                  {page.previewUri ? (
-                    <Image
-                      source={{ uri: page.previewUri }}
-                      style={styles.previewImage}
-                      resizeMode="cover"
-                    />
-                  ) : (
+                  {!page.previewUri ? (
                     <>
                       <View style={[styles.fakeLine, { backgroundColor: theme.colors.divider }]} />
                       <View style={[styles.fakeLineShort, { backgroundColor: theme.colors.divider }]} />
                       <View style={[styles.fakeLine, { backgroundColor: theme.colors.divider }]} />
                     </>
-                  )}
+                  ) : null}
+                  <PageThumbnailImage page={page} pageIndex={index}
+                    backgroundType={backgroundType} pdfUri={pdfUri} style={styles.previewImage} />
                   <Text
                     style={[
                       typography.caption,

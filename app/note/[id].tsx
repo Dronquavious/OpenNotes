@@ -952,7 +952,9 @@ export default function NoteScreen() {
 
       <PageSidebar
         visible={isPageSidebarOpen}
-        pages={enginePages}
+        pages={pagesForOverlay}
+        backgroundType={metadata?.backgroundType ?? 'plain'}
+        pdfUri={metadata?.pdfUri}
         currentPage={currentPageIndex}
         topInset={headerHeight}
         bottomInset={insets.bottom}
