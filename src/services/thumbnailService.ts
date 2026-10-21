@@ -1,6 +1,7 @@
 import { ClipOp, Skia, type SkImage } from '@shopify/react-native-skia';
 import { batchExportPages, type InsertedElement, type NotebookPage } from '@mathnotes/mobile-ink';
 import { createPromiseQueue } from '../utils/promiseQueue';
+import { PDFUtilsModule } from './pdfUtilsModule';
 
 export const THUMBNAIL_VERSION = 1;
 const PAGE_WIDTH = 820;
@@ -13,6 +14,16 @@ function finite(value: number | undefined, fallback: number): number {
 }
 
 async function decodeImage(uri: string): Promise<SkImage> {
+  try {
+    return await readSkiaImage(uri);
+  } catch (error) {
+    if (!uri.startsWith('file://') || !PDFUtilsModule?.readImageForThumbnail) throw error;
+    // ImageIO can decode legacy HEIC photos that Skia's codecs do not support.
+    return readSkiaImage(await PDFUtilsModule.readImageForThumbnail(uri));
+  }
+}
+
+async function readSkiaImage(uri: string): Promise<SkImage> {
   const data = uri.startsWith('data:image/')
     ? Skia.Data.fromBase64(uri.slice(uri.indexOf(',') + 1))
     : await Skia.Data.fromURI(uri);

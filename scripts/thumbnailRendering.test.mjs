@@ -44,11 +44,14 @@ const red = solid('#ff0000');
 const blue = solid('#0000ff');
 const black = solid('#000000');
 
-function harness({ nativeFails = false, nativeParagraphBuilder = false } = {}) {
+function harness({ nativeFails = false, nativeParagraphBuilder = false, nativeImage } = {}) {
   const exports = {};
   const nativeCalls = [];
   vm.runInNewContext(source, { exports, require(name) {
     if (name === '../utils/promiseQueue') return { createPromiseQueue };
+    if (name === './pdfUtilsModule') return { PDFUtilsModule: nativeImage ? {
+      readImageForThumbnail: nativeImage,
+    } : undefined };
     if (name === '@shopify/react-native-skia') return { Skia: nativeParagraphBuilder ? {
       ...Skia, ParagraphBuilder: { Make: (...args) => {
         const builder = Skia.ParagraphBuilder.Make(...args);
@@ -166,6 +169,20 @@ test('rendering preserves the original notebook data including unknown legacy fi
 
 test('unreadable image assets report failure instead of caching an incomplete cover', async () => {
   await assert.rejects(harness().createPageThumbnail(page([photo('data:image/png;base64,invalid')])));
+});
+
+test('legacy HEIC files use the native decoder when Skia cannot read them', async () => {
+  const h = harness({ nativeImage: async uri => {
+    assert.equal(uri, 'file:///legacy/photo.heic');
+    return blue;
+  } });
+  const result = await h.createPageThumbnail(page([photo('file:///legacy/photo.heic')]));
+  assert.deepEqual(pixel(result, 100, 100), [0, 0, 255, 255]);
+});
+
+test('a failed native image fallback does not cache an incomplete thumbnail', async () => {
+  const h = harness({ nativeImage: async () => { throw new Error('Image missing'); } });
+  await assert.rejects(h.createPageThumbnail(page([photo('file:///missing/photo.heic')])), /Image missing/);
 });
 
 test('PDF thumbnails without a preview request the correct background page', async () => {

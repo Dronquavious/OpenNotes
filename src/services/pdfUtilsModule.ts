@@ -5,6 +5,7 @@ export type PDFUtilsModuleType = {
   getPageCount?: (filePath: string) => Promise<number>;
   copySecurityScopedFileToTmp?: (sourceUrl: string) => Promise<string>;
   mergePdfFiles?: (fileUris: string[]) => Promise<string>;
+  readImageForThumbnail?: (fileUri: string) => Promise<string>;
 };
 
 export const PDFUtilsModule = NativeModules.PDFUtilsModule as PDFUtilsModuleType | undefined;

@@ -8,6 +8,26 @@ class PDFUtilsModule: NSObject {
     return false
   }
 
+  @objc
+  func readImageForThumbnail(_ fileUri: String,
+                            resolver: @escaping RCTPromiseResolveBlock,
+                            rejecter: @escaping RCTPromiseRejectBlock) {
+    DispatchQueue.global(qos: .userInitiated).async {
+      autoreleasepool {
+        guard let url = PDFUtilsModule.localFileURL(fileUri) else {
+          rejecter("E_INVALID_PATH", "Invalid image file URL", nil)
+          return
+        }
+        do {
+          let data = try ImageThumbnailEncoder.pngData(at: url)
+          resolver("data:image/png;base64," + data.base64EncodedString())
+        } catch {
+          rejecter("E_IMAGE_DECODE", "Could not decode image for thumbnail", error)
+        }
+      }
+    }
+  }
+
   /// A file URL for a file:// URI or a plain absolute path.
   private static func localFileURL(_ path: String) -> URL? {
     if path.hasPrefix("file://") {

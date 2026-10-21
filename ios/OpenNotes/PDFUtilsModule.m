@@ -2,6 +2,10 @@
 
 @interface RCT_EXTERN_MODULE(PDFUtilsModule, NSObject)
 
+RCT_EXTERN_METHOD(readImageForThumbnail:(NSString *)fileUri
+                  resolver:(RCTPromiseResolveBlock)resolver
+                  rejecter:(RCTPromiseRejectBlock)rejecter)
+
 RCT_EXTERN_METHOD(getPageCount:(NSString *)filePath
                   resolver:(RCTPromiseResolveBlock)resolver
                   rejecter:(RCTPromiseRejectBlock)rejecter)
