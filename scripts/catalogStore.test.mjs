@@ -10,6 +10,21 @@ import {
   parseCatalog,
 } from '../src/services/catalogStore.ts';
 
+test('catalog reload preserves composed thumbnail versions and still accepts old notes', () => {
+  const catalog = parseCatalog(JSON.stringify({
+    version: 1, folders: [], notes: [
+      { id: 'old', title: 'Old note', thumbnailUri: 'old-ink-preview' },
+      { id: 'new', title: 'Photo note', thumbnailUri: 'composed-cover', thumbnailVersion: 1 },
+    ],
+  }));
+  assert.equal(catalog.notes[0].thumbnailUri, 'old-ink-preview');
+  assert.equal(catalog.notes[0].thumbnailVersion, undefined);
+  assert.equal(catalog.notes[1].thumbnailVersion, 1);
+  const restored = parseCatalog(JSON.stringify(catalog));
+  assert.equal(restored.notes[1].thumbnailUri, 'composed-cover');
+  assert.equal(restored.notes[1].thumbnailVersion, 1);
+});
+
 function makeKv(initial = {}) {
   const map = new Map(Object.entries(initial));
   return {

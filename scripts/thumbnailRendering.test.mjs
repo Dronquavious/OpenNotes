@@ -11,6 +11,19 @@ const initCanvasKit = require('canvaskit-wasm/bin/full/canvaskit.js');
 const kit = await initCanvasKit({ locateFile: file => require.resolve('canvaskit-wasm/bin/full/' + file) });
 const { JsiSkApi } = require('../node_modules/@shopify/react-native-skia/lib/commonjs/skia/web/JsiSkia.js');
 const Skia = JsiSkApi(kit);
+const fonts = Skia.TypefaceFontProvider.Make();
+const fontData = Skia.Data.fromBytes(readFileSync(require.resolve(
+  '@shopify/react-native-skia/src/skia/__tests__/assets/Roboto-Regular.ttf',
+)));
+const font = Skia.Typeface.MakeFreeTypeFaceFromData(fontData);
+fonts.registerFont(font, 'Roboto');
+const makeParagraph = Skia.ParagraphBuilder.Make.bind(Skia.ParagraphBuilder);
+Skia.ParagraphBuilder.Make = style => {
+  const builder = makeParagraph(style, fonts);
+  const pushStyle = builder.pushStyle.bind(builder);
+  builder.pushStyle = textStyle => pushStyle({ ...textStyle, fontFamilies: ['Roboto'] });
+  return builder;
+};
 const source = ts.transpileModule(
   readFileSync(new URL('../src/services/thumbnailService.ts', import.meta.url), 'utf8'),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
@@ -53,14 +66,19 @@ function page(elements = [], extra = {}) {
 function photo(sourceUri = red, extra = {}) {
   return { id: 'photo', type: 'image', sourceUri, x: 100, y: 100, width: 200, height: 200, rotation: 0, ...extra };
 }
+let lastRaster;
 function pixel(uri, x, y) {
-  const data = Skia.Data.fromBase64(uri.split(',')[1]);
-  const image = Skia.Image.MakeImageFromEncoded(data);
-  const pixels = image.readPixels(x, y, { width: 1, height: 1, colorType: 4, alphaType: 1 });
-  const result = [...pixels];
-  image.dispose();
-  data.dispose();
-  return result;
+  if (lastRaster?.uri !== uri) {
+    const data = Skia.Data.fromBase64(uri.split(',')[1]);
+    const image = Skia.Image.MakeImageFromEncoded(data);
+    lastRaster = { uri, width: image.width(), pixels: image.readPixels(0, 0, {
+      width: image.width(), height: image.height(), colorType: 4, alphaType: 1,
+    }) };
+    image.dispose();
+    data.dispose();
+  }
+  const offset = (y * lastRaster.width + x) * 4;
+  return [...lastRaster.pixels.subarray(offset, offset + 4)];
 }
 
 test('legacy ink-only previews are returned byte-for-byte without rendering', async () => {
@@ -142,4 +160,73 @@ test('PDF thumbnails without a preview request the correct background page', asy
   await h.createPageThumbnail(page([photo()], { previewUri: undefined, pdfPageNumber: 3 }), 'pdf', 'file:///lecture.pdf', 1);
   assert.equal(h.nativeCalls[0][5], 'file:///lecture.pdf');
   assert.equal(h.nativeCalls[0][6][0], 2);
+});
+
+test('typed text is included and clipped to its original text box', async () => {
+  const result = await harness().createPageThumbnail(page([], { textBoxes: [{
+    id: 'caption', content: 'Visible text\nSecond line\nHidden line', color: '#000000',
+    x: 100, y: 100, width: 300, height: 70, fontSize: 40,
+  }] }));
+  let darkPixels = 0;
+  for (let y = 55; y < 85; y += 2) {
+    for (let x = 55; x < 190; x += 2) {
+      if (pixel(result, x, y)[0] < 128) darkPixels += 1;
+    }
+  }
+  assert.ok(darkPixels > 30, 'Expected visible text glyphs inside the text box');
+  assert.deepEqual(pixel(result, 60, 95), [255, 255, 255, 255]);
+});
+
+test('legacy renderedImageUri assets are supported without sourceUri', async () => {
+  const result = await harness().createPageThumbnail(page([photo(undefined, {
+    sourceUri: undefined, renderedImageUri: blue,
+  })]));
+  assert.deepEqual(pixel(result, 100, 100), [0, 0, 255, 255]);
+});
+
+test('a failed background render does not manufacture a blank completed preview', async () => {
+  await assert.rejects(harness({ nativeFails: true }).createPageThumbnail(
+    page([photo()], { previewUri: undefined }),
+  ), /Native renderer unavailable/);
+});
+
+test('malformed numeric bounds cannot poison the graphics context', async () => {
+  const result = await harness().createPageThumbnail(page([photo(red, {
+    x: NaN, y: Infinity, width: NaN, height: undefined, rotation: Infinity,
+  })]));
+  assert.deepEqual(pixel(result, 20, 20), [255, 0, 0, 255]);
+});
+
+test('ordinary image overlays cover text just as they do in the editor', async () => {
+  const result = await harness().createPageThumbnail(page([photo()], { textBoxes: [{
+    id: 'behind-photo', content: 'Hidden text', color: '#000000',
+    x: 100, y: 100, width: 200, height: 200, fontSize: 40,
+  }] }));
+  for (let y = 55; y < 85; y += 3) {
+    for (let x = 55; x < 145; x += 3) {
+      assert.deepEqual(pixel(result, x, y), [255, 0, 0, 255]);
+    }
+  }
+});
+
+test('text is visible above images explicitly sent behind it', async () => {
+  const result = await harness().createPageThumbnail(page([photo(red, { zIndex: -1 })], { textBoxes: [{
+    id: 'above-photo', content: 'Visible text', color: '#000000',
+    x: 100, y: 100, width: 200, height: 200, fontSize: 40,
+  }] }));
+  let darkPixels = 0;
+  for (let y = 55; y < 85; y += 3) {
+    for (let x = 55; x < 145; x += 3) {
+      if (pixel(result, x, y)[0] < 128) darkPixels += 1;
+    }
+  }
+  assert.ok(darkPixels > 10);
+});
+
+test('cancelled queued sidebar previews skip native capture instead of delaying later saves', async () => {
+  const h = harness();
+  assert.equal(await h.createPageThumbnail(page([photo()], { previewUri: undefined }), 'plain', null, 0, () => true), null);
+  assert.equal(h.nativeCalls.length, 0);
+  const saved = await h.createPageThumbnail(page([photo()]));
+  assert.deepEqual(pixel(saved, 100, 100), [255, 0, 0, 255]);
 });

@@ -14,9 +14,10 @@ const composite = 'data:image/png;base64,cGhvdG8=';
 const photo = { id: 'photo', type: 'image', sourceUri: 'file:///photo.jpg', x: 20, y: 30, width: 100, height: 80 };
 const body = () => ({ version: '1.0', pages: [{ id: 'page-1', data: '{"pages":{}}', previewUri: ink, insertedElements: [photo] }] });
 
-function harness({ writeOk = true, renderFails = false } = {}) {
+function harness({ writeOk = true, renderFails = false, render = async () => composite, readKind = 'ok' } = {}) {
   let catalog = { notes: [{ id: 'note', createdAt: '2026-01-01', updatedAt: '2026-01-02', thumbnailUri: ink, backgroundType: 'plain' }] };
   let stored = body();
+  let reads = 0;
   const exports = {};
   vm.runInNewContext(source, {
     exports,
@@ -27,13 +28,13 @@ function harness({ writeOk = true, renderFails = false } = {}) {
       } };
       if (name === './noteBodyStorage') return {
         writeBody: async (_id, data) => { if (writeOk) stored = structuredClone(data); return writeOk; },
-        readBody: async () => ({ kind: 'ok', data: structuredClone(stored) }),
+        readBody: async () => { reads += 1; return { kind: readKind, data: structuredClone(stored) }; },
       };
       if (name === './thumbnailService') return {
         THUMBNAIL_VERSION: 1,
-        createPageThumbnail: async () => {
+        createPageThumbnail: async (...args) => {
           if (renderFails) throw new Error('Image decoder unavailable');
-          return composite;
+          return render(...args);
         },
       };
       if (name === '../i18n') return { t: { common: { untitled: 'Untitled' } } };
@@ -43,7 +44,8 @@ function harness({ writeOk = true, renderFails = false } = {}) {
       throw new Error('Unexpected import: ' + name);
     },
   });
-  return { ...exports, note: () => catalog.notes[0], stored: () => stored };
+  return { ...exports, note: () => catalog.notes[0], stored: () => stored, reads: () => reads,
+    removeNote: () => { catalog.notes = []; } };
 }
 
 test('saving uses a composed cover without flattening overlays into the note body', async () => {
@@ -85,4 +87,81 @@ test('failed legacy thumbnail repair keeps the existing cover eligible for retry
   const h = harness({ renderFails: true });
   assert.equal(await h.getNoteThumbnail(h.note()), ink);
   assert.notEqual(h.note().thumbnailVersion, 1);
+});
+
+test('image-only saves compose the first page even when no ink preview exists', async () => {
+  const h = harness({ render: async page => page.insertedElements?.length ? composite : null });
+  const original = body();
+  delete original.pages[0].previewUri;
+  assert.equal((await h.saveNoteBody('note', original)).ok, true);
+  assert.equal(h.note().thumbnailUri, composite);
+  assert.equal(h.stored().pages[0].previewUri, undefined);
+});
+
+test('saving an image-only edit uses the new overlay data instead of the previous body', async () => {
+  const h = harness({ render: async page => page.insertedElements[0].x === 300 ? composite : ink });
+  const original = body();
+  original.pages[0].insertedElements = [{ ...photo, x: 300 }];
+  await h.saveNoteBody('note', original);
+  assert.equal(h.note().thumbnailUri, composite);
+});
+
+test('deleting all overlays restores the original ink-only cover', async () => {
+  const h = harness({ render: async page => page.insertedElements?.length ? composite : page.previewUri });
+  await h.saveNoteBody('note', body());
+  const original = body();
+  original.pages[0].insertedElements = [];
+  await h.saveNoteBody('note', original);
+  assert.equal(h.note().thumbnailUri, ink);
+});
+
+for (const readKind of ['unreadable', 'missing']) {
+  test(`${readKind} legacy bodies retain their last thumbnail without being rewritten`, async () => {
+    const h = harness({ readKind });
+    const before = structuredClone(h.note());
+    assert.equal(await h.getNoteThumbnail(h.note()), ink);
+    assert.deepEqual(h.note(), before);
+  });
+}
+
+test('current thumbnail versions do not re-read or rewrite legacy bodies', async () => {
+  const h = harness();
+  await h.updateMetadata('note', { thumbnailVersion: 1, thumbnailUri: composite });
+  assert.equal(await h.getNoteThumbnail(h.note()), composite);
+  assert.equal(h.reads(), 0);
+});
+
+test('an old thumbnail repair cannot overwrite a newer note save', async () => {
+  let finishRender;
+  let startRender;
+  const started = new Promise(resolve => { startRender = resolve; });
+  const h = harness({ render: () => new Promise(resolve => { finishRender = resolve; startRender(); }) });
+  const repairing = h.getNoteThumbnail(structuredClone(h.note()));
+  await started;
+  await h.updateMetadata('note', { updatedAt: '2026-10-22', thumbnailUri: 'new-cover', thumbnailVersion: 1 });
+  finishRender(composite);
+  assert.equal(await repairing, 'new-cover');
+  assert.equal(h.note().thumbnailUri, 'new-cover');
+});
+
+test('a repair completing after note deletion cannot resurrect the note', async () => {
+  let finishRender;
+  let startRender;
+  const started = new Promise(resolve => { startRender = resolve; });
+  const h = harness({ render: () => new Promise(resolve => { finishRender = resolve; startRender(); }) });
+  const repairing = h.getNoteThumbnail(h.note());
+  await started;
+  h.removeNote();
+  finishRender(composite);
+  assert.equal(await repairing, null);
+  assert.equal(h.note(), undefined);
+});
+
+test('duplicate card requests share a single repair of the same legacy cover', async () => {
+  const h = harness();
+  const first = h.getNoteThumbnail(h.note());
+  const second = h.getNoteThumbnail(h.note());
+  assert.equal(await first, composite);
+  assert.equal(await second, composite);
+  assert.equal(h.reads(), 1);
 });

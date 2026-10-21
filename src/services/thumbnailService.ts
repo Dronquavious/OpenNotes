@@ -1,5 +1,5 @@
 import { ClipOp, Skia, type SkImage } from '@shopify/react-native-skia';
-import { batchExportPages, type NotebookPage } from '@mathnotes/mobile-ink';
+import { batchExportPages, type InsertedElement, type NotebookPage } from '@mathnotes/mobile-ink';
 import { createPromiseQueue } from '../utils/promiseQueue';
 
 export const THUMBNAIL_VERSION = 1;
@@ -31,8 +31,10 @@ export function createPageThumbnail(
   backgroundType = 'plain',
   pdfUri?: string | null,
   pageIndex = 0,
+  shouldCancel?: () => boolean,
 ): Promise<string | null> {
-  return renderQueue.enqueue(() => composePageThumbnail(page, backgroundType, pdfUri, pageIndex));
+  return renderQueue.enqueue(async () => shouldCancel?.()
+    ? null : composePageThumbnail(page, backgroundType, pdfUri, pageIndex));
 }
 
 async function composePageThumbnail(
@@ -44,7 +46,7 @@ async function composePageThumbnail(
   if (!page) return null;
   const elements = [...(page.insertedElements ?? [])]
     .filter(element => element.type === 'image' || element.sourceUri || element.renderedImageUri)
-    .sort((a, b) => finite(a.zIndex, 0) - finite(b.zIndex, 0));
+    .sort((a, b) => finite(a.zIndex, 1) - finite(b.zIndex, 1));
   const textBoxes = (page.textBoxes ?? []).filter(box => Boolean(box.content));
   if (!elements.length && !textBoxes.length) return page.previewUri ?? null;
 
@@ -72,7 +74,7 @@ async function composePageThumbnail(
       base.dispose();
     }
 
-    for (const element of elements) {
+    const drawElement = async (element: InsertedElement) => {
       const uri = element.sourceUri ?? element.renderedImageUri;
       if (!uri) throw new Error('Thumbnail image has no source');
       const image = await decodeImage(uri);
@@ -98,13 +100,19 @@ async function composePageThumbnail(
       } finally {
         image.dispose();
       }
+    };
+
+    // Text siblings have zIndex 0; image siblings default to zIndex 1.
+    for (const element of elements.filter(element => finite(element.zIndex, 1) <= 0)) {
+      await drawElement(element);
     }
 
     for (const box of textBoxes) {
-      const builder = Skia.ParagraphBuilder.Make({ textStyle: {
+      const builder = Skia.ParagraphBuilder.Make();
+      builder.pushStyle({
         color: Skia.Color(box.color || '#000000'), fontSize: Math.max(1, finite(box.fontSize, 18)),
         heightMultiplier: 1.25,
-      } });
+      });
       const paragraph = builder.addText(box.content).build();
       try {
         const x = finite(box.x, 0);
@@ -120,6 +128,9 @@ async function composePageThumbnail(
         paragraph.dispose();
         builder.dispose();
       }
+    }
+    for (const element of elements.filter(element => finite(element.zIndex, 1) > 0)) {
+      await drawElement(element);
     }
     surface.flush();
     const image = surface.makeImageSnapshot();
